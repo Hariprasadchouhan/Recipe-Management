@@ -4,16 +4,17 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.securin.recipes.model.Recipe;
+
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.transaction.annotation.Transactional;
 import com.securin.recipes.repository.RecipeRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import java.io.InputStream;
 
-import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -61,44 +62,40 @@ public class RecipeService {
     @Transactional
     public void loadDataIfNeeded() throws IOException {
         logger.info("Checking if data loading is needed. loadData: {}, current count: {}", loadData, recipeRepository.count());
-        
+    
         if (!loadData) {
             logger.info("Data loading is disabled via configuration");
             return;
         }
-        
+    
         if (recipeRepository.count() > 0) {
             logger.info("Data already loaded, skipping. Current count: {}", recipeRepository.count());
             return;
         }
-        
-        String resolvedPath = resolveDataFilePath();
-        logger.info("Resolved data file path: {}", resolvedPath);
-        
-        File file = new File(resolvedPath);
-        if (!file.exists()) {
-            logger.warn("Data file does not exist: {}", resolvedPath);
+    
+        // Load from classpath
+        ClassPathResource resource = new ClassPathResource("data/US_recipes.json");
+    
+        if (!resource.exists()) {
+            logger.warn("Data file not found in classpath: data/recipes.json");
             return;
         }
-        
-        logger.info("Starting data loading from file: {} (size: {} bytes)", resolvedPath, file.length());
-        
-        try {
-            byte[] jsonBytes = Files.readAllBytes(file.toPath());
-            logger.debug("Read {} bytes from file", jsonBytes.length);
-            
-            JsonNode root = objectMapper.readTree(jsonBytes);
+    
+        logger.info("Starting data loading from classpath file: {}", resource.getFilename());
+    
+        try (InputStream inputStream = resource.getInputStream()) {
+            JsonNode root = objectMapper.readTree(inputStream);
             logger.info("Successfully parsed JSON with {} root fields", root.size());
-            
+    
             List<Recipe> toSave = new ArrayList<>();
             Iterator<Map.Entry<String, JsonNode>> fields = root.fields();
             int processedCount = 0;
             int skippedCount = 0;
-            
+    
             while (fields.hasNext()) {
                 Map.Entry<String, JsonNode> entry = fields.next();
                 JsonNode node = entry.getValue();
-                
+    
                 try {
                     Recipe r = new Recipe();
                     r.setCuisine(getText(node, "cuisine"));
@@ -108,26 +105,26 @@ public class RecipeService {
                     r.setCookTime(getIntOrNull(node, "cook_time"));
                     r.setTotalTime(getIntOrNull(node, "total_time"));
                     r.setDescription(getText(node, "description"));
-                    
+    
                     JsonNode nutrients = node.get("nutrients");
                     r.setNutrients(nutrients == null || nutrients.isNull() ? null : nutrients.toString());
                     r.setServes(getText(node, "serves"));
-                    
+    
                     toSave.add(r);
                     processedCount++;
-                    
+    
                     if (processedCount % 1000 == 0) {
                         logger.debug("Processed {} recipes so far", processedCount);
                     }
-                    
+    
                 } catch (Exception e) {
                     logger.warn("Failed to process recipe at index {}, skipping. Error: {}", processedCount + skippedCount, e.getMessage());
                     skippedCount++;
                 }
             }
-            
+    
             logger.info("Processing complete. Valid recipes: {}, Skipped: {}", processedCount, skippedCount);
-            
+    
             if (!toSave.isEmpty()) {
                 logger.info("Saving {} recipes to database", toSave.size());
                 List<Recipe> savedRecipes = recipeRepository.saveAll(toSave);
@@ -135,19 +132,13 @@ public class RecipeService {
             } else {
                 logger.warn("No valid recipes to save");
             }
-            
+    
         } catch (Exception e) {
-            logger.error("Failed to load data from file: {}", resolvedPath, e);
+            logger.error("Failed to load data from classpath file: data/recipes.json", e);
             throw e;
         }
     }
-
-    private String resolveDataFilePath() {
-        String env = System.getenv("RECIPES_JSON");
-        String finalPath = (env != null && !env.isBlank()) ? env : dataFilePath;
-        logger.debug("Data file path resolved to: {} (env: {}, config: {})", finalPath, env, dataFilePath);
-        return finalPath;
-    }
+    
 
     private String getText(JsonNode node, String field) {
         JsonNode val = node.get(field);
